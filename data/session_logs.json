@@ -1,1 +1,11 @@
-[]
+[
+  {
+    "id": "uuid-here",
+    "userId": 1,
+    "username": "admin",
+    "action": "login",
+    "ip": "::1",
+    "userAgent": "Mozilla/5.0...",
+    "timestamp": "2024-01-20T15:45:00.000Z"
+  }
+]
