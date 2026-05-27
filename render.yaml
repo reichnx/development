@@ -1,22 +1,15 @@
+# render.yaml
 services:
   - type: web
     name: facebook-share-tool
     runtime: node
-    plan: free
-    buildCommand: cd backend && npm install && npm run build
-    startCommand: cd backend && npm start
+    repo: https://github.com/yourusername/facebook-share-tool
+    buildCommand: npm install
+    startCommand: node index.js
     envVars:
+      - key: JWT_SECRET
+        value: your-secret-key-here
+      - key: SESSION_SECRET
+        value: your-session-secret-here
       - key: NODE_ENV
         value: production
-      - key: JWT_SECRET
-        sync: false
-      - key: SESSION_SECRET
-        sync: false
-      - key: MAX_SHARES_PER_REQUEST
-        value: 500
-      - key: RATE_LIMIT_WINDOW_MS
-        value: 900000
-      - key: RATE_LIMIT_MAX_REQUESTS
-        value: 200
-    healthCheckPath: /api/health
-    autoDeploy: true
