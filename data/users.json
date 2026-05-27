@@ -1,9 +1,9 @@
 [
   {
     "id": 1,
-    "username": "admin",
-    "email": "admin@sharemaster.com",
-    "password": "$2a$10$hashedpasswordhere",
+    "username": "admin404",
+    "email": "halimaw@mail.net",
+    "password": "halimaw123",
     "role": "admin",
     "isActive": true,
     "cookies": [],
