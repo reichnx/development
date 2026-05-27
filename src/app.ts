@@ -6,43 +6,52 @@ import rateLimit from 'express-rate-limit';
 import session from 'express-session';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
+
+// Import routes
 import authRoutes from './routes/authRoutes';
 import cookieRoutes from './routes/cookieRoutes';
 import shareRoutes from './routes/shareRoutes';
 import logger from './utils/logger';
 
+// Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://cdnjs.cloudflare.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://graph.facebook.com", "https://business.facebook.com"]
-    }
+// Ensure required directories exist
+const dirs = ['logs', 'data'];
+dirs.forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+});
+
+// Security middleware (relaxed for Render)
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
 }));
 
 // Compression
 app.use(compression());
 
-// CORS
+// CORS for Render
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true
+  origin: true, // Allow all origins for Render
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
-  message: 'Too many requests from this IP, please try again later.'
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, // limit each IP to 200 requests per windowMs
+  message: 'Too many requests from this IP',
+  standardHeaders: true,
+  legacyHeaders: false
 });
 app.use('/api/', limiter);
 
@@ -52,59 +61,82 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Session
 app.use(session({
-  secret: process.env.SESSION_SECRET!,
+  secret: process.env.SESSION_SECRET || 'default-secret-change-this',
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: false, // Set to true if using HTTPS
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 24 * 60 * 60 * 1000
   }
 }));
 
-// Static files
-app.use(express.static(path.join(__dirname, '../../frontend')));
+// Serve static files from frontend
+const frontendPath = path.join(__dirname, '../../frontend');
+if (fs.existsSync(frontendPath)) {
+  app.use(express.static(frontendPath));
+  console.log(`Serving frontend from: ${frontendPath}`);
+} else {
+  console.warn(`Frontend path not found: ${frontendPath}`);
+}
 
-// Routes
+// API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/cookies', cookieRoutes);
 app.use('/api/shares', shareRoutes);
 
-// Health check
+// Health check for Render
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    version: '2.0.0',
+    environment: process.env.NODE_ENV || 'production'
   });
 });
 
-// Serve frontend
+// Root endpoint
+app.get('/api', (req, res) => {
+  res.json({
+    name: 'Facebook Share Tool API',
+    version: '2.0.0',
+    status: 'running',
+    endpoints: {
+      auth: '/api/auth',
+      cookies: '/api/cookies',
+      shares: '/api/shares',
+      health: '/api/health'
+    }
+  });
+});
+
+// Serve frontend for all other routes
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../../frontend/index.html'));
+  const indexPath = path.join(frontendPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).json({ error: 'Frontend not found' });
+  }
 });
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  logger.error('Unhandled error:', err);
+  console.error('Error:', err);
   res.status(500).json({
     success: false,
     message: 'Internal server error',
-    code: 'SERVER_ERROR'
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
 // Start server
-app.listen(PORT, () => {
-  logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
-  logger.info(`🔗 Client URL: ${process.env.CLIENT_URL || 'http://localhost:3000'}`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM signal received: closing HTTP server');
-  process.exit(0);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 API URL: http://localhost:${PORT}/api`);
 });
 
 export default app;
