@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: facebook-share-tool
+    env: node
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: cd backend && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: CLIENT_URL
+        value: https://your-app-url.onrender.com
+      - key: MAX_SHARES_PER_REQUEST
+        value: 500
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: 100
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    healthCheckPath: /api/health
