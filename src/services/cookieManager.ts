@@ -1,36 +1,21 @@
 import { EventEmitter } from 'events';
-import { CookieAccount, ShareResult } from '../types';
+import { CookieAccount } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../utils/logger';
 import axios from 'axios';
-
-interface CookieRotationConfig {
-  maxSharesPerCookie: number;
-  cooldownPeriod: number;
-  healthCheckInterval: number;
-}
 
 export class CookieManager extends EventEmitter {
   private cookies: Map<string, CookieAccount>;
   private activeCookies: Set<string>;
   private cookieUsageCount: Map<string, number>;
   private cookieCooldown: Map<string, number>;
-  private config: CookieRotationConfig;
 
-  constructor(config?: Partial<CookieRotationConfig>) {
+  constructor() {
     super();
     this.cookies = new Map();
     this.activeCookies = new Set();
     this.cookieUsageCount = new Map();
     this.cookieCooldown = new Map();
-    this.config = {
-      maxSharesPerCookie: 50,
-      cooldownPeriod: 60000, // 1 minute
-      healthCheckInterval: 300000, // 5 minutes
-      ...config
-    };
-
-    this.startHealthCheck();
   }
 
   addCookie(cookie: CookieAccount): void {
@@ -80,7 +65,7 @@ export class CookieManager extends EventEmitter {
       const cooldownUntil = this.cookieCooldown.get(cookieId) || 0;
       const usageCount = this.cookieUsageCount.get(cookieId) || 0;
       
-      if (now >= cooldownUntil && usageCount < this.config.maxSharesPerCookie) {
+      if (now >= cooldownUntil && usageCount < 50) {
         const cookie = this.cookies.get(cookieId);
         if (cookie && cookie.status === 'active') {
           return cookie;
@@ -95,7 +80,7 @@ export class CookieManager extends EventEmitter {
     const usageCount = (this.cookieUsageCount.get(cookieId) || 0) + 1;
     this.cookieUsageCount.set(cookieId, usageCount);
     
-    if (usageCount >= this.config.maxSharesPerCookie) {
+    if (usageCount >= 50) {
       this.putCookieOnCooldown(cookieId);
     }
     
@@ -108,7 +93,7 @@ export class CookieManager extends EventEmitter {
   }
 
   private putCookieOnCooldown(cookieId: string): void {
-    const cooldownUntil = Date.now() + this.config.cooldownPeriod;
+    const cooldownUntil = Date.now() + 60000;
     this.cookieCooldown.set(cookieId, cooldownUntil);
     this.cookieUsageCount.set(cookieId, 0);
     
@@ -116,9 +101,9 @@ export class CookieManager extends EventEmitter {
       this.cookieCooldown.delete(cookieId);
       logger.info(`Cookie ${cookieId} removed from cooldown`);
       this.emit('cookie-ready', cookieId);
-    }, this.config.cooldownPeriod);
+    }, 60000);
     
-    logger.info(`Cookie ${cookieId} put on cooldown until ${new Date(cooldownUntil)}`);
+    logger.info(`Cookie ${cookieId} on cooldown until ${new Date(cooldownUntil)}`);
   }
 
   async validateCookie(cookie: string, userAgent: string): Promise<boolean> {
@@ -133,7 +118,6 @@ export class CookieManager extends EventEmitter {
       
       return response.data && response.data.id ? true : false;
     } catch (error) {
-      logger.error('Cookie validation failed:', error);
       return false;
     }
   }
@@ -158,30 +142,7 @@ export class CookieManager extends EventEmitter {
       
       return null;
     } catch (error) {
-      logger.error('Token extraction failed:', error);
       return null;
-    }
-  }
-
-  private startHealthCheck(): void {
-    setInterval(() => {
-      this.performHealthCheck();
-    }, this.config.healthCheckInterval);
-  }
-
-  private async performHealthCheck(): Promise<void> {
-    logger.info('Performing cookie health check...');
-    
-    for (const [cookieId, cookie] of this.cookies) {
-      if (cookie.status === 'active') {
-        const isValid = await this.validateCookie(cookie.cookie, cookie.userAgent || '');
-        
-        if (!isValid) {
-          this.updateCookie(cookieId, { status: 'banned' });
-          logger.warn(`Cookie ${cookie.name} marked as banned due to validation failure`);
-          this.emit('cookie-banned', cookieId);
-        }
-      }
     }
   }
 
@@ -199,13 +160,7 @@ export class CookieManager extends EventEmitter {
     const banned = Array.from(this.cookies.values()).filter(c => c.status === 'banned').length;
     const totalShares = Array.from(this.cookies.values()).reduce((sum, c) => sum + c.sharesCount, 0);
     
-    return {
-      total,
-      active,
-      banned,
-      totalShares,
-      available: this.getNextAvailableCookie() !== null
-    };
+    return { total, active, banned, totalShares };
   }
 }
 
