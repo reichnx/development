@@ -1,40 +1,31 @@
 [
   {
     "id": 1,
-    "username": "admin404",
-    "email": "halimaw@mail.net",
-    "password": "halimaw123",
+    "username": "admin",
+    "email": "admin@sharemaster.com",
+    "password": "$2a$10$hashedpasswordhere",
     "role": "admin",
     "isActive": true,
-    "cookies": [],
+    "cookies": [
+      {
+        "id": "abc-123-def",
+        "name": "My Facebook Account",
+        "cookie": "c_user=123456; xs=789abc;...",
+        "status": "active",
+        "createdAt": "2024-01-20T10:00:00.000Z",
+        "lastUsed": "2024-01-20T15:30:00.000Z",
+        "usageCount": 5,
+        "successRate": 90
+      }
+    ],
     "stats": {
-      "totalShares": 0,
-      "successfulShares": 0,
-      "failedShares": 0
+      "totalShares": 10,
+      "successfulShares": 9,
+      "failedShares": 1,
+      "totalCookies": 1
     },
-    "createdAt": "2024-01-01T00:00:00.000Z",
-    "lastLogin": null,
-    "settings": {
-      "notifications": true,
-      "theme": "dark",
-      "language": "en"
-    }
-  },
-  {
-    "id": 2,
-    "username": "john_doe",
-    "email": "john@example.com",
-    "password": "$2a$10$anotherhashedpassword",
-    "role": "user",
-    "isActive": true,
-    "cookies": [],
-    "stats": {
-      "totalShares": 5,
-      "successfulShares": 4,
-      "failedShares": 1
-    },
-    "createdAt": "2024-01-15T10:30:00.000Z",
-    "lastLogin": "2024-01-20T15:45:00.000Z",
+    "createdAt": "2024-01-20T10:00:00.000Z",
+    "lastLogin": "2024-01-20T15:30:00.000Z",
     "settings": {
       "notifications": true,
       "theme": "dark",
