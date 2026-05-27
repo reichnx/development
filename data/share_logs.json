@@ -1,17 +1,1 @@
-[
-  {
-    "id": "uuid-here",
-    "userId": 1,
-    "username": "admin",
-    "link": "https://www.facebook.com/post/123",
-    "limit": 10,
-    "cookieId": "cookie-uuid",
-    "status": "completed",
-    "progress": 100,
-    "completed": 10,
-    "success": 9,
-    "failed": 1,
-    "startTime": "2024-01-20T10:00:00.000Z",
-    "endTime": "2024-01-20T10:05:00.000Z"
-  }
-]
+[]
