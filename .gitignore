@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+backend/node_modules/
+
+# Build outputs
+backend/dist/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Runtime data
+data/
+*.db
+*.sqlite
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Frontend
+frontend/.DS_Store
