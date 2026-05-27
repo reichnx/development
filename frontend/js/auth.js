@@ -1,8 +1,7 @@
-const API_BASE_URL = window.location.origin + '/api';
+const API_BASE_URL = ''; // Empty means use same origin
 
 let currentUser = null;
 
-// Check authentication
 async function checkAuth() {
     const token = localStorage.getItem('token');
     if (!token) {
@@ -11,7 +10,7 @@ async function checkAuth() {
     }
 
     try {
-        const response = await fetch(`${API_BASE_URL}/auth/profile`, {
+        const response = await fetch('/api/auth/profile', {
             headers: {
                 'Authorization': `Bearer ${token}`
             }
@@ -23,29 +22,31 @@ async function checkAuth() {
 
         const data = await response.json();
         currentUser = data.data;
-        document.getElementById('username').textContent = currentUser.username;
+        const usernameSpan = document.getElementById('username');
+        if (usernameSpan) {
+            usernameSpan.textContent = currentUser.username;
+        }
         return true;
     } catch (error) {
+        console.error('Auth check failed:', error);
         localStorage.removeItem('token');
         window.location.href = '/login.html';
         return false;
     }
 }
 
-// Logout function
 function logout() {
     localStorage.removeItem('token');
     window.location.href = '/login.html';
 }
 
-// API request helper
 async function apiRequest(endpoint, options = {}) {
     const token = localStorage.getItem('token');
     
     const defaultOptions = {
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            'Authorization': token ? `Bearer ${token}` : ''
         }
     };
 
@@ -58,28 +59,24 @@ async function apiRequest(endpoint, options = {}) {
         }
     };
 
-    try {
-        const response = await fetch(`${API_BASE_URL}${endpoint}`, mergedOptions);
-        const data = await response.json();
-        
-        if (!response.ok) {
-            if (response.status === 401 || response.status === 403) {
-                localStorage.removeItem('token');
-                window.location.href = '/login.html';
-            }
-            throw new Error(data.message || 'API request failed');
+    const response = await fetch(`/api${endpoint}`, mergedOptions);
+    const data = await response.json();
+    
+    if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+            localStorage.removeItem('token');
+            window.location.href = '/login.html';
         }
-        
-        return data;
-    } catch (error) {
-        showAlert(error.message, 'danger');
-        throw error;
+        throw new Error(data.message || 'API request failed');
     }
+    
+    return data;
 }
 
-// Show alert message
 function showAlert(message, type = 'info') {
     const alertContainer = document.getElementById('alertContainer');
+    if (!alertContainer) return;
+    
     const alert = document.createElement('div');
     alert.className = `alert alert-${type} alert-dismissible fade show`;
     alert.innerHTML = `
@@ -93,15 +90,6 @@ function showAlert(message, type = 'info') {
     }, 5000);
 }
 
-// Format date
 function formatDate(date) {
     return new Date(date).toLocaleString();
-}
-
-// Format duration
-function formatDuration(seconds) {
-    if (!seconds) return 'N/A';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
