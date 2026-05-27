@@ -34,21 +34,12 @@ const errorLogTransport = new DailyRotateFile({
   format: fileFormat
 });
 
-const combinedLogTransport = new DailyRotateFile({
-  filename: path.join(logDir, 'combined-%DATE%.log'),
-  datePattern: 'YYYY-MM-DD',
-  maxSize: '20m',
-  maxFiles: '7d',
-  format: fileFormat
-});
-
 export const logger = winston.createLogger({
   level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
   format: fileFormat,
   transports: [
     shareLogTransport,
     errorLogTransport,
-    combinedLogTransport,
     new winston.transports.Console({
       format: consoleFormat,
       level: 'debug'
@@ -73,10 +64,6 @@ export class ShareLogger {
 
   warning(message: string, meta?: any) {
     logger.warn(message, { shareId: this.shareId, ...meta });
-  }
-
-  debug(message: string, meta?: any) {
-    logger.debug(message, { shareId: this.shareId, ...meta });
   }
 }
 
