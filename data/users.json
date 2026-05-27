@@ -1,1 +1,44 @@
-[]
+[
+  {
+    "id": 1,
+    "username": "admin",
+    "email": "admin@sharemaster.com",
+    "password": "$2a$10$hashedpasswordhere",
+    "role": "admin",
+    "isActive": true,
+    "cookies": [],
+    "stats": {
+      "totalShares": 0,
+      "successfulShares": 0,
+      "failedShares": 0
+    },
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "lastLogin": null,
+    "settings": {
+      "notifications": true,
+      "theme": "dark",
+      "language": "en"
+    }
+  },
+  {
+    "id": 2,
+    "username": "john_doe",
+    "email": "john@example.com",
+    "password": "$2a$10$anotherhashedpassword",
+    "role": "user",
+    "isActive": true,
+    "cookies": [],
+    "stats": {
+      "totalShares": 5,
+      "successfulShares": 4,
+      "failedShares": 1
+    },
+    "createdAt": "2024-01-15T10:30:00.000Z",
+    "lastLogin": "2024-01-20T15:45:00.000Z",
+    "settings": {
+      "notifications": true,
+      "theme": "dark",
+      "language": "en"
+    }
+  }
+]
