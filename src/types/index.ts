@@ -30,6 +30,7 @@ export interface ShareJob {
   progress: number;
   startTime: Date;
   endTime?: Date;
+  duration?: number;
   cookiesUsed: string[];
   logs: ShareLog[];
 }
@@ -41,12 +42,6 @@ export interface ShareLog {
   message: string;
   cookieId?: string;
   shareId?: string;
-}
-
-export interface TokenData {
-  token: string;
-  expiresAt?: Date;
-  cookieId: string;
 }
 
 export interface ShareResult {
