@@ -25,6 +25,14 @@ let shareLogs = [];
 let pendingShares = new Map();
 let sessionLogs = [];
 
+// User agents for rotation
+const USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
+];
+
 // Load users from file
 async function loadUsers() {
     try {
@@ -33,7 +41,6 @@ async function loadUsers() {
         console.log(`✅ Loaded ${users.length} users from database`);
     } catch (err) {
         console.log('📝 No existing users found, creating default admin account...');
-        // Create default admin account
         const hashedPassword = await bcrypt.hash('admin123', 10);
         users = [{
             id: 1,
@@ -42,6 +49,13 @@ async function loadUsers() {
             password: hashedPassword,
             role: 'admin',
             isActive: true,
+            cookies: [],
+            stats: {
+                totalShares: 0,
+                successfulShares: 0,
+                failedShares: 0,
+                totalCookies: 0
+            },
             createdAt: new Date().toISOString(),
             lastLogin: null,
             settings: {
@@ -81,6 +95,44 @@ async function saveOtherData() {
     await fs.writeFile('./data/session_logs.json', JSON.stringify(sessionLogs.slice(-5000), null, 2));
 }
 
+// Token extraction function
+async function extractToken(cookie) {
+    try {
+        const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+        const response = await axios.get('https://business.facebook.com/business_locations', {
+            headers: {
+                'User-Agent': ua,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cookie': cookie,
+                'Connection': 'keep-alive'
+            },
+            timeout: 15000
+        });
+        
+        const patterns = [
+            /"accessToken":"([^"]+)"/,
+            /access_token=([^&"\s]+)/,
+            /EAAG\w+/,
+            /EAA[A-Za-z0-9]{50,}/
+        ];
+        
+        for (const pattern of patterns) {
+            const match = response.data.match(pattern);
+            if (match) {
+                const token = match[1] || match[0];
+                if (token && token.length > 30) {
+                    return token;
+                }
+            }
+        }
+        return null;
+    } catch (err) {
+        console.error('Token extraction failed:', err.message);
+        return null;
+    }
+}
+
 // Middleware
 app.use(helmet({
     contentSecurityPolicy: false,
@@ -94,51 +146,30 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Rate limiting for auth endpoints
+// Rate limiting
 const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // 5 attempts per window
-    message: { status: false, message: 'Too many login attempts. Please try again later.' }
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { status: false, message: 'Too many attempts. Try again later.' }
 });
 
-// ==================== USER AUTHENTICATION MIDDLEWARE ====================
-
+// Authentication middleware
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
-        return res.status(401).json({ 
-            status: false, 
-            message: 'Access token required',
-            code: 'NO_TOKEN'
-        });
+        return res.status(401).json({ status: false, message: 'Access token required' });
     }
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            if (err.name === 'TokenExpiredError') {
-                return res.status(401).json({ 
-                    status: false, 
-                    message: 'Token expired',
-                    code: 'TOKEN_EXPIRED'
-                });
-            }
-            return res.status(403).json({ 
-                status: false, 
-                message: 'Invalid token',
-                code: 'INVALID_TOKEN'
-            });
+            return res.status(403).json({ status: false, message: 'Invalid or expired token' });
         }
         
-        // Check if user still exists
         const existingUser = users.find(u => u.id === user.id);
         if (!existingUser || !existingUser.isActive) {
-            return res.status(401).json({ 
-                status: false, 
-                message: 'User not found or inactive',
-                code: 'USER_INACTIVE'
-            });
+            return res.status(401).json({ status: false, message: 'User not found' });
         }
         
         req.user = user;
@@ -146,72 +177,33 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// Optional authentication (doesn't fail if no token)
-function optionalAuth(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (token) {
-        jwt.verify(token, JWT_SECRET, (err, user) => {
-            if (!err) {
-                req.user = user;
-            }
-        });
-    }
-    next();
-}
-
 // ==================== AUTHENTICATION ENDPOINTS ====================
 
-// Register new user
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { username, email, password } = req.body;
 
-        // Validation
         if (!username || !email || !password) {
-            return res.status(400).json({
-                status: false,
-                message: 'All fields are required',
-                code: 'MISSING_FIELDS'
-            });
+            return res.status(400).json({ status: false, message: 'All fields are required' });
         }
 
         if (username.length < 3) {
-            return res.status(400).json({
-                status: false,
-                message: 'Username must be at least 3 characters',
-                code: 'INVALID_USERNAME'
-            });
+            return res.status(400).json({ status: false, message: 'Username must be at least 3 characters' });
         }
 
         if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-            return res.status(400).json({
-                status: false,
-                message: 'Invalid email format',
-                code: 'INVALID_EMAIL'
-            });
+            return res.status(400).json({ status: false, message: 'Invalid email format' });
         }
 
         if (password.length < 6) {
-            return res.status(400).json({
-                status: false,
-                message: 'Password must be at least 6 characters',
-                code: 'WEAK_PASSWORD'
-            });
+            return res.status(400).json({ status: false, message: 'Password must be at least 6 characters' });
         }
 
-        // Check if user exists
         const existingUser = users.find(u => u.username === username || u.email === email);
         if (existingUser) {
-            return res.status(400).json({
-                status: false,
-                message: existingUser.username === username ? 'Username already taken' : 'Email already registered',
-                code: 'USER_EXISTS'
-            });
+            return res.status(400).json({ status: false, message: 'Username or email already exists' });
         }
 
-        // Create new user
         const hashedPassword = await bcrypt.hash(password, 10);
         const newUser = {
             id: users.length + 1,
@@ -224,7 +216,8 @@ app.post('/api/auth/register', async (req, res) => {
             stats: {
                 totalShares: 0,
                 successfulShares: 0,
-                failedShares: 0
+                failedShares: 0,
+                totalCookies: 0
             },
             createdAt: new Date().toISOString(),
             lastLogin: null,
@@ -238,32 +231,14 @@ app.post('/api/auth/register', async (req, res) => {
         users.push(newUser);
         await saveUsers();
 
-        // Generate tokens
         const accessToken = jwt.sign(
             { id: newUser.id, username: newUser.username, role: newUser.role },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
 
-        const refreshToken = jwt.sign(
-            { id: newUser.id },
-            JWT_REFRESH_SECRET,
-            { expiresIn: '7d' }
-        );
-
+        const refreshToken = jwt.sign({ id: newUser.id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
         refreshTokens.set(refreshToken, newUser.id);
-
-        // Log session
-        sessionLogs.unshift({
-            id: uuidv4(),
-            userId: newUser.id,
-            username: newUser.username,
-            action: 'register',
-            ip: req.ip,
-            userAgent: req.headers['user-agent'],
-            timestamp: new Date().toISOString()
-        });
-        await saveOtherData();
 
         res.json({
             status: true,
@@ -282,77 +257,42 @@ app.post('/api/auth/register', async (req, res) => {
 
     } catch (error) {
         console.error('Registration error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error during registration',
-            code: 'SERVER_ERROR'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Login user
 app.post('/api/auth/login', authLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
 
         if (!username || !password) {
-            return res.status(400).json({
-                status: false,
-                message: 'Username and password are required',
-                code: 'MISSING_CREDENTIALS'
-            });
+            return res.status(400).json({ status: false, message: 'Username and password required' });
         }
 
-        // Find user by username or email
-        const user = users.find(u => 
-            u.username === username || 
-            u.email === username
-        );
-
+        const user = users.find(u => u.username === username || u.email === username);
         if (!user) {
-            return res.status(401).json({
-                status: false,
-                message: 'Invalid credentials',
-                code: 'INVALID_CREDENTIALS'
-            });
+            return res.status(401).json({ status: false, message: 'Invalid credentials' });
         }
 
-        // Check if account is active
         if (!user.isActive) {
-            return res.status(401).json({
-                status: false,
-                message: 'Account is disabled. Please contact support.',
-                code: 'ACCOUNT_DISABLED'
-            });
+            return res.status(401).json({ status: false, message: 'Account disabled' });
         }
 
-        // Verify password
         const isValidPassword = await bcrypt.compare(password, user.password);
         if (!isValidPassword) {
-            return res.status(401).json({
-                status: false,
-                message: 'Invalid credentials',
-                code: 'INVALID_CREDENTIALS'
-            });
+            return res.status(401).json({ status: false, message: 'Invalid credentials' });
         }
 
-        // Update last login
         user.lastLogin = new Date().toISOString();
         await saveUsers();
 
-        // Generate tokens
         const accessToken = jwt.sign(
             { id: user.id, username: user.username, role: user.role },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
 
-        const refreshToken = jwt.sign(
-            { id: user.id },
-            JWT_REFRESH_SECRET,
-            { expiresIn: '7d' }
-        );
-
+        const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
         refreshTokens.set(refreshToken, user.id);
 
         // Log session
@@ -362,7 +302,6 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
             username: user.username,
             action: 'login',
             ip: req.ip,
-            userAgent: req.headers['user-agent'],
             timestamp: new Date().toISOString()
         });
         await saveOtherData();
@@ -376,8 +315,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
                     username: user.username,
                     email: user.email,
                     role: user.role,
-                    stats: user.stats,
-                    settings: user.settings
+                    stats: user.stats
                 },
                 accessToken,
                 refreshToken
@@ -386,321 +324,78 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error during login',
-            code: 'SERVER_ERROR'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Refresh token
 app.post('/api/auth/refresh', async (req, res) => {
     try {
         const { refreshToken } = req.body;
 
         if (!refreshToken) {
-            return res.status(400).json({
-                status: false,
-                message: 'Refresh token required',
-                code: 'NO_REFRESH_TOKEN'
-            });
+            return res.status(400).json({ status: false, message: 'Refresh token required' });
         }
 
-        // Verify refresh token
         const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
         
-        // Check if token exists in store
         if (!refreshTokens.has(refreshToken)) {
-            return res.status(401).json({
-                status: false,
-                message: 'Invalid refresh token',
-                code: 'INVALID_REFRESH_TOKEN'
-            });
+            return res.status(401).json({ status: false, message: 'Invalid refresh token' });
         }
 
-        // Find user
         const user = users.find(u => u.id === decoded.id);
         if (!user || !user.isActive) {
-            return res.status(401).json({
-                status: false,
-                message: 'User not found or inactive',
-                code: 'USER_NOT_FOUND'
-            });
+            return res.status(401).json({ status: false, message: 'User not found' });
         }
 
-        // Generate new access token
         const newAccessToken = jwt.sign(
             { id: user.id, username: user.username, role: user.role },
             JWT_SECRET,
             { expiresIn: '24h' }
         );
 
-        res.json({
-            status: true,
-            data: {
-                accessToken: newAccessToken
-            }
-        });
+        res.json({ status: true, data: { accessToken: newAccessToken } });
 
     } catch (error) {
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({
-                status: false,
-                message: 'Refresh token expired',
-                code: 'REFRESH_TOKEN_EXPIRED'
-            });
-        }
-        
-        res.status(401).json({
-            status: false,
-            message: 'Invalid refresh token',
-            code: 'INVALID_REFRESH_TOKEN'
-        });
+        res.status(401).json({ status: false, message: 'Invalid refresh token' });
     }
 });
 
-// Logout
 app.post('/api/auth/logout', authenticateToken, async (req, res) => {
     try {
         const { refreshToken } = req.body;
-        
-        // Remove refresh token from store
         if (refreshToken) {
             refreshTokens.delete(refreshToken);
         }
-
-        // Log logout
-        sessionLogs.unshift({
-            id: uuidv4(),
-            userId: req.user.id,
-            username: req.user.username,
-            action: 'logout',
-            ip: req.ip,
-            userAgent: req.headers['user-agent'],
-            timestamp: new Date().toISOString()
-        });
-        await saveOtherData();
-
-        res.json({
-            status: true,
-            message: 'Logout successful'
-        });
-
+        res.json({ status: true, message: 'Logout successful' });
     } catch (error) {
-        console.error('Logout error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error during logout'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Get current user profile
-app.get('/api/auth/profile', authenticateToken, async (req, res) => {
-    try {
-        const user = users.find(u => u.id === req.user.id);
-        
-        if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
-        }
+// ==================== COOKIE MANAGEMENT ====================
 
-        res.json({
-            status: true,
-            data: {
-                user: {
-                    id: user.id,
-                    username: user.username,
-                    email: user.email,
-                    role: user.role,
-                    stats: user.stats,
-                    settings: user.settings,
-                    createdAt: user.createdAt,
-                    lastLogin: user.lastLogin
-                }
-            }
-        });
-
-    } catch (error) {
-        console.error('Profile error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
-    }
-});
-
-// Update user profile
-app.put('/api/auth/profile', authenticateToken, async (req, res) => {
-    try {
-        const { email, settings } = req.body;
-        const user = users.find(u => u.id === req.user.id);
-
-        if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
-        }
-
-        // Update email if provided
-        if (email && email !== user.email) {
-            const emailExists = users.some(u => u.email === email && u.id !== user.id);
-            if (emailExists) {
-                return res.status(400).json({
-                    status: false,
-                    message: 'Email already in use'
-                });
-            }
-            user.email = email;
-        }
-
-        // Update settings if provided
-        if (settings) {
-            user.settings = { ...user.settings, ...settings };
-        }
-
-        await saveUsers();
-
-        res.json({
-            status: true,
-            message: 'Profile updated successfully',
-            data: {
-                user: {
-                    id: user.id,
-                    username: user.username,
-                    email: user.email,
-                    settings: user.settings
-                }
-            }
-        });
-
-    } catch (error) {
-        console.error('Update profile error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
-    }
-});
-
-// Change password
-app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
-    try {
-        const { currentPassword, newPassword } = req.body;
-        const user = users.find(u => u.id === req.user.id);
-
-        if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
-        }
-
-        // Verify current password
-        const isValid = await bcrypt.compare(currentPassword, user.password);
-        if (!isValid) {
-            return res.status(401).json({
-                status: false,
-                message: 'Current password is incorrect'
-            });
-        }
-
-        // Validate new password
-        if (newPassword.length < 6) {
-            return res.status(400).json({
-                status: false,
-                message: 'New password must be at least 6 characters'
-            });
-        }
-
-        // Update password
-        user.password = await bcrypt.hash(newPassword, 10);
-        await saveUsers();
-
-        // Log password change
-        sessionLogs.unshift({
-            id: uuidv4(),
-            userId: user.id,
-            username: user.username,
-            action: 'change_password',
-            ip: req.ip,
-            userAgent: req.headers['user-agent'],
-            timestamp: new Date().toISOString()
-        });
-        await saveOtherData();
-
-        res.json({
-            status: true,
-            message: 'Password changed successfully'
-        });
-
-    } catch (error) {
-        console.error('Change password error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
-    }
-});
-
-// Get session logs (admin only)
-app.get('/api/auth/sessions', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({
-                status: false,
-                message: 'Admin access required'
-            });
-        }
-
-        const limit = parseInt(req.query.limit) || 100;
-        const logs = sessionLogs.slice(0, limit);
-
-        res.json({
-            status: true,
-            data: { sessions: logs }
-        });
-
-    } catch (error) {
-        console.error('Session logs error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
-    }
-});
-
-// ==================== COOKIE MANAGEMENT ENDPOINTS ====================
-
-// Add cookie
 app.post('/api/cookies/add', authenticateToken, async (req, res) => {
     try {
         const { cookie, name } = req.body;
         
         if (!cookie) {
-            return res.status(400).json({
-                status: false,
-                message: 'Cookie is required'
-            });
+            return res.status(400).json({ status: false, message: 'Cookie is required' });
         }
 
         const user = users.find(u => u.id === req.user.id);
         if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
+            return res.status(404).json({ status: false, message: 'User not found' });
         }
 
+        // Validate cookie by extracting token
+        const token = await extractToken(cookie);
+        const isValid = token !== null;
+        
         const newCookie = {
             id: uuidv4(),
             name: name || `Cookie ${user.cookies.length + 1}`,
             cookie: cookie,
-            status: 'pending',
+            status: isValid ? 'active' : 'invalid',
             createdAt: new Date().toISOString(),
             lastUsed: null,
             usageCount: 0,
@@ -708,33 +403,27 @@ app.post('/api/cookies/add', authenticateToken, async (req, res) => {
         };
 
         user.cookies.push(newCookie);
+        user.stats.totalCookies = user.cookies.length;
         await saveUsers();
 
         res.json({
             status: true,
-            message: 'Cookie added successfully',
+            message: isValid ? 'Cookie added and validated successfully!' : 'Cookie added but validation failed. Check your cookie string.',
             data: { cookie: newCookie }
         });
 
     } catch (error) {
         console.error('Add cookie error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Get user cookies
 app.get('/api/cookies/list', authenticateToken, async (req, res) => {
     try {
         const user = users.find(u => u.id === req.user.id);
         
         if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
+            return res.status(404).json({ status: false, message: 'User not found' });
         }
 
         const cookies = user.cookies.map(c => ({
@@ -748,90 +437,92 @@ app.get('/api/cookies/list', authenticateToken, async (req, res) => {
             preview: c.cookie.substring(0, 50) + '...'
         }));
 
-        res.json({
-            status: true,
-            data: { cookies }
-        });
+        res.json({ status: true, data: { cookies } });
 
     } catch (error) {
         console.error('List cookies error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Delete cookie
 app.delete('/api/cookies/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
         const user = users.find(u => u.id === req.user.id);
         
         if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
+            return res.status(404).json({ status: false, message: 'User not found' });
         }
 
         const cookieIndex = user.cookies.findIndex(c => c.id === id);
         if (cookieIndex === -1) {
-            return res.status(404).json({
-                status: false,
-                message: 'Cookie not found'
-            });
+            return res.status(404).json({ status: false, message: 'Cookie not found' });
         }
 
         user.cookies.splice(cookieIndex, 1);
+        user.stats.totalCookies = user.cookies.length;
         await saveUsers();
 
-        res.json({
-            status: true,
-            message: 'Cookie deleted successfully'
-        });
+        res.json({ status: true, message: 'Cookie deleted successfully' });
 
     } catch (error) {
         console.error('Delete cookie error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Clear all cookies
 app.post('/api/cookies/clear', authenticateToken, async (req, res) => {
     try {
         const user = users.find(u => u.id === req.user.id);
         
         if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
+            return res.status(404).json({ status: false, message: 'User not found' });
         }
 
         user.cookies = [];
+        user.stats.totalCookies = 0;
         await saveUsers();
 
-        res.json({
-            status: true,
-            message: 'All cookies cleared successfully'
-        });
+        res.json({ status: true, message: 'All cookies cleared' });
 
     } catch (error) {
         console.error('Clear cookies error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
+        res.status(500).json({ status: false, message: 'Server error' });
+    }
+});
+
+app.post('/api/cookies/validate/:id', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = users.find(u => u.id === req.user.id);
+        
+        if (!user) {
+            return res.status(404).json({ status: false, message: 'User not found' });
+        }
+
+        const cookie = user.cookies.find(c => c.id === id);
+        if (!cookie) {
+            return res.status(404).json({ status: false, message: 'Cookie not found' });
+        }
+
+        const token = await extractToken(cookie.cookie);
+        cookie.status = token ? 'active' : 'invalid';
+        await saveUsers();
+
+        res.json({ 
+            status: true, 
+            message: token ? 'Cookie is valid' : 'Cookie is invalid',
+            data: { status: cookie.status }
         });
+
+    } catch (error) {
+        console.error('Validate cookie error:', error);
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
 // ==================== SHARE ENDPOINTS ====================
 
-// Start share
 app.post('/api/share', authenticateToken, async (req, res) => {
     const shareId = uuidv4();
     
@@ -839,26 +530,21 @@ app.post('/api/share', authenticateToken, async (req, res) => {
         const { cookieId, link, limit } = req.body;
         
         if (!cookieId || !link || !limit) {
-            return res.status(400).json({
-                status: false,
-                message: 'Cookie ID, link, and limit are required'
-            });
+            return res.status(400).json({ status: false, message: 'Cookie ID, link, and limit are required' });
         }
 
         const user = users.find(u => u.id === req.user.id);
         if (!user) {
-            return res.status(404).json({
-                status: false,
-                message: 'User not found'
-            });
+            return res.status(404).json({ status: false, message: 'User not found' });
         }
 
         const cookie = user.cookies.find(c => c.id === cookieId);
         if (!cookie) {
-            return res.status(404).json({
-                status: false,
-                message: 'Cookie not found'
-            });
+            return res.status(404).json({ status: false, message: 'Cookie not found' });
+        }
+
+        if (cookie.status !== 'active') {
+            return res.status(400).json({ status: false, message: 'Cookie is not active. Please add a valid cookie.' });
         }
 
         const shareData = {
@@ -868,6 +554,7 @@ app.post('/api/share', authenticateToken, async (req, res) => {
             link: link,
             limit: parseInt(limit),
             cookieId: cookieId,
+            cookieName: cookie.name,
             status: 'processing',
             progress: 0,
             completed: 0,
@@ -880,109 +567,149 @@ app.post('/api/share', authenticateToken, async (req, res) => {
         shareLogs.unshift(shareData);
         await saveOtherData();
 
+        // Update cookie usage
+        cookie.lastUsed = new Date().toISOString();
+        cookie.usageCount++;
+        await saveUsers();
+
+        // Start share process
+        processShareAsync(shareId, shareData, cookie.cookie).catch(console.error);
+
         res.json({
             status: true,
             message: 'Share started successfully',
             data: { shareId: shareId }
         });
 
-        // Process share in background
-        processShareAsync(shareId, shareData, cookie.cookie).catch(console.error);
-
     } catch (error) {
         console.error('Share error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Get share progress
+async function processShareAsync(shareId, shareData, cookie) {
+    const token = await extractToken(cookie);
+    
+    if (!token) {
+        const share = shareLogs.find(s => s.id === shareId);
+        if (share) {
+            share.status = 'failed';
+            share.endTime = new Date().toISOString();
+            await saveOtherData();
+        }
+        return;
+    }
+
+    for (let i = 0; i < shareData.limit; i++) {
+        const share = shareLogs.find(s => s.id === shareId);
+        if (!share || share.status === 'cancelled') {
+            break;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
+        
+        try {
+            const response = await axios.post('https://graph.facebook.com/v18.0/me/feed', null, {
+                params: {
+                    link: shareData.link,
+                    access_token: token,
+                    published: 0
+                },
+                headers: {
+                    'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+                    'Cookie': cookie
+                },
+                timeout: 15000
+            });
+
+            if (response.data && response.data.id) {
+                share.success++;
+            } else {
+                share.failed++;
+            }
+        } catch (err) {
+            share.failed++;
+            console.error(`Share ${i + 1} failed:`, err.message);
+        }
+
+        share.completed = i + 1;
+        share.progress = Math.round(((i + 1) / shareData.limit) * 100);
+        await saveOtherData();
+    }
+
+    const share = shareLogs.find(s => s.id === shareId);
+    if (share && share.status !== 'cancelled') {
+        share.status = share.success > 0 ? 'completed' : 'failed';
+        share.endTime = new Date().toISOString();
+        await saveOtherData();
+
+        // Update user stats
+        const user = users.find(u => u.id === share.userId);
+        if (user) {
+            user.stats.totalShares++;
+            user.stats.successfulShares += share.success;
+            user.stats.failedShares += share.failed;
+            await saveUsers();
+        }
+
+        // Update cookie success rate
+        const user2 = users.find(u => u.id === share.userId);
+        const cookie = user2?.cookies.find(c => c.id === share.cookieId);
+        if (cookie) {
+            const totalAttempts = cookie.usageCount;
+            const totalSuccess = cookie.successRate * (totalAttempts - 1) + share.success;
+            cookie.successRate = totalAttempts > 0 ? Math.round(totalSuccess / totalAttempts) : 0;
+            await saveUsers();
+        }
+    }
+}
+
 app.get('/api/share/:id/progress', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
         const share = shareLogs.find(s => s.id === id);
         
         if (!share) {
-            return res.status(404).json({
-                status: false,
-                message: 'Share not found'
-            });
+            return res.status(404).json({ status: false, message: 'Share not found' });
         }
 
         if (share.userId !== req.user.id && req.user.role !== 'admin') {
-            return res.status(403).json({
-                status: false,
-                message: 'Access denied'
-            });
+            return res.status(403).json({ status: false, message: 'Access denied' });
         }
 
-        res.json({
-            status: true,
-            data: {
-                share: {
-                    id: share.id,
-                    status: share.status,
-                    progress: share.progress,
-                    completed: share.completed,
-                    total: share.limit,
-                    success: share.success,
-                    failed: share.failed,
-                    startTime: share.startTime,
-                    endTime: share.endTime
-                }
-            }
-        });
+        res.json({ status: true, data: { share } });
 
     } catch (error) {
         console.error('Progress error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Cancel share
 app.post('/api/share/:id/cancel', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
         const share = shareLogs.find(s => s.id === id);
         
         if (!share) {
-            return res.status(404).json({
-                status: false,
-                message: 'Share not found'
-            });
+            return res.status(404).json({ status: false, message: 'Share not found' });
         }
 
         if (share.userId !== req.user.id && req.user.role !== 'admin') {
-            return res.status(403).json({
-                status: false,
-                message: 'Access denied'
-            });
+            return res.status(403).json({ status: false, message: 'Access denied' });
         }
 
         share.status = 'cancelled';
         share.endTime = new Date().toISOString();
         await saveOtherData();
 
-        res.json({
-            status: true,
-            message: 'Share cancelled successfully'
-        });
+        res.json({ status: true, message: 'Share cancelled' });
 
     } catch (error) {
-        console.error('Cancel share error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        console.error('Cancel error:', error);
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Get share history
 app.get('/api/history', authenticateToken, async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 50;
@@ -990,21 +717,14 @@ app.get('/api/history', authenticateToken, async (req, res) => {
             .filter(s => s.userId === req.user.id || req.user.role === 'admin')
             .slice(0, limit);
 
-        res.json({
-            status: true,
-            data: { history: userShares }
-        });
+        res.json({ status: true, data: { history: userShares } });
 
     } catch (error) {
         console.error('History error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Get active shares
 app.get('/api/active-shares', authenticateToken, async (req, res) => {
     try {
         const active = shareLogs.filter(s => 
@@ -1012,26 +732,17 @@ app.get('/api/active-shares', authenticateToken, async (req, res) => {
             s.status === 'processing'
         );
 
-        res.json({
-            status: true,
-            data: { active_shares: active }
-        });
+        res.json({ status: true, data: { active_shares: active } });
 
     } catch (error) {
         console.error('Active shares error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
 
-// Get stats
 app.get('/api/stats', authenticateToken, async (req, res) => {
     try {
-        const userShares = shareLogs.filter(s => 
-            s.userId === req.user.id || req.user.role === 'admin'
-        );
+        const userShares = shareLogs.filter(s => s.userId === req.user.id || req.user.role === 'admin');
         
         const totalShares = userShares.length;
         const totalSuccess = userShares.reduce((sum, s) => sum + (s.success || 0), 0);
@@ -1060,80 +771,25 @@ app.get('/api/stats', authenticateToken, async (req, res) => {
 
     } catch (error) {
         console.error('Stats error:', error);
-        res.status(500).json({
-            status: false,
-            message: 'Server error'
-        });
+        res.status(500).json({ status: false, message: 'Server error' });
     }
 });
-
-// ==================== HELPER FUNCTIONS ====================
-
-async function processShareAsync(shareId, shareData, cookie) {
-    // Simulate sharing process
-    for (let i = 0; i < shareData.limit; i++) {
-        // Check if cancelled
-        const share = shareLogs.find(s => s.id === shareId);
-        if (!share || share.status === 'cancelled') {
-            break;
-        }
-
-        // Simulate work
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Update progress
-        share.completed = i + 1;
-        share.progress = Math.round(((i + 1) / shareData.limit) * 100);
-        
-        // Simulate random success/failure (90% success rate for demo)
-        if (Math.random() < 0.9) {
-            share.success++;
-        } else {
-            share.failed++;
-        }
-        
-        await saveOtherData();
-    }
-    
-    // Finalize share
-    const share = shareLogs.find(s => s.id === shareId);
-    if (share && share.status !== 'cancelled') {
-        share.status = 'completed';
-        share.endTime = new Date().toISOString();
-        await saveOtherData();
-        
-        // Update user stats
-        const user = users.find(u => u.id === share.userId);
-        if (user) {
-            user.stats.totalShares = (user.stats.totalShares || 0) + 1;
-            user.stats.successfulShares = (user.stats.successfulShares || 0) + share.success;
-            user.stats.failedShares = (user.stats.failedShares || 0) + share.failed;
-            await saveUsers();
-        }
-    }
-}
-
-// ==================== HEALTH CHECK ====================
 
 app.get('/api/health', (req, res) => {
     res.json({
         status: true,
-        message: 'Server is running',
+        message: 'Server running',
         timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        users: users.length,
-        activeShares: shareLogs.filter(s => s.status === 'processing').length
+        uptime: process.uptime()
     });
 });
 
-// ==================== SERVE FRONTEND ====================
-
+// Serve frontend
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ==================== START SERVER ====================
-
+// Start server
 const PORT = process.env.PORT || 5000;
 
 async function startServer() {
@@ -1142,18 +798,14 @@ async function startServer() {
     
     app.listen(PORT, () => {
         console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-        console.log(`📝 Default admin login:`);
-        console.log(`   Username: admin`);
-        console.log(`   Password: admin123`);
-        console.log(`\n✨ Ready to accept requests!\n`);
+        console.log(`📝 Default login: admin / admin123`);
+        console.log(`✨ Ready!\n`);
     });
 }
 
 startServer();
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
-    console.log('SIGTERM received, shutting down gracefully...');
     await saveUsers();
     await saveOtherData();
     process.exit(0);
