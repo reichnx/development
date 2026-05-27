@@ -3,29 +3,70 @@ import { v4 as uuidv4 } from 'uuid';
 import { ShareJob, ShareResult, ShareLog, CookieAccount } from '../types';
 import { cookieManager } from './cookieManager';
 import { ShareLogger } from '../utils/logger';
-import { tokenService } from './tokenService';
 
 const USER_AGENTS = [
-  "Mozilla/5.0 (Linux; Android 10; Wildfire E Lite) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/105.0.5195.136 Mobile Safari/537.36[FBAN/EMA;FBLC/en_US;FBAV/298.0.0.10.115;]",
-  "Mozilla/5.0 (Linux; Android 11; KINGKONG 5 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/87.0.4280.141 Mobile Safari/537.36[FBAN/EMA;FBLC/fr_FR;FBAV/320.0.0.12.108;]",
-  "Mozilla/5.0 (Linux; Android 11; G91 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/106.0.5249.126 Mobile Safari/537.36[FBAN/EMA;FBLC/fr_FR;FBAV/325.0.1.4.108;]"
+  "Mozilla/5.0 (Linux; Android 10; Wildfire E Lite) AppleWebKit/537.36[FBAN/EMA;FBLC/en_US;FBAV/298.0.0.10.115;]",
+  "Mozilla/5.0 (Linux; Android 11; KINGKONG 5 Pro) AppleWebKit/537.36[FBAN/EMA;FBLC/fr_FR;FBAV/320.0.0.12.108;]",
+  "Mozilla/5.0 (Linux; Android 11; G91 Pro) AppleWebKit/537.36[FBAN/EMA;FBLC/fr_FR;FBAV/325.0.1.4.108;]"
 ];
+
+class TokenService {
+  private tokenCache: Map<string, string>;
+
+  constructor() {
+    this.tokenCache = new Map();
+  }
+
+  async extractToken(cookie: CookieAccount): Promise<string | null> {
+    const cached = this.tokenCache.get(cookie.id);
+    if (cached) return cached;
+
+    const userAgent = cookie.userAgent || USER_AGENTS[0];
+    
+    try {
+      const response = await axios.get('https://business.facebook.com/business_locations', {
+        headers: {
+          'user-agent': userAgent,
+          'cookie': cookie.cookie,
+          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        },
+        timeout: 15000
+      });
+      
+      const patterns = [/(EAAG\w+)/, /(EAA[A-Za-z0-9]+)/, /access_token=([^&\s"]+)/];
+      
+      for (const pattern of patterns) {
+        const match = response.data.match(pattern);
+        if (match) {
+          const token = match[1];
+          this.tokenCache.set(cookie.id, token);
+          return token;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  invalidateToken(cookieId: string) {
+    this.tokenCache.delete(cookieId);
+  }
+}
+
+const tokenService = new TokenService();
 
 export class ShareService {
   private activeJobs: Map<string, ShareJob>;
   private jobLogs: Map<string, ShareLog[]>;
-  private isProcessing: boolean = false;
 
   constructor() {
     this.activeJobs = new Map();
     this.jobLogs = new Map();
   }
 
-  async startSharing(
-    userId: string,
-    link: string,
-    totalShares: number
-  ): Promise<ShareJob> {
+  async startSharing(userId: string, link: string, totalShares: number): Promise<ShareJob> {
     const jobId = uuidv4();
     const logger = new ShareLogger(jobId);
 
@@ -46,9 +87,8 @@ export class ShareService {
     this.activeJobs.set(jobId, job);
     this.jobLogs.set(jobId, []);
     
-    logger.info(`Share job created: ${totalShares} shares requested`);
+    logger.info(`Share job created: ${totalShares} shares`);
 
-    // Process asynchronously
     setImmediate(() => this.processShares(jobId));
 
     return job;
@@ -62,166 +102,99 @@ export class ShareService {
     const logger = new ShareLogger(jobId);
     logger.info('Starting share processing');
 
-    const results: ShareResult[] = [];
     let sharesProcessed = 0;
 
     while (sharesProcessed < job.totalShares && job.status === 'processing') {
       const cookie = cookieManager.getNextAvailableCookie();
       
       if (!cookie) {
-        logger.warning('No available cookies, waiting...');
         await this.sleep(5000);
         continue;
       }
 
-      const sharesToProcess = Math.min(
-        10,
-        job.totalShares - sharesProcessed
-      );
-
-      logger.info(`Processing batch of ${sharesToProcess} shares with cookie: ${cookie.name}`);
-
-      for (let i = 0; i < sharesToProcess; i++) {
-        if (job.status !== 'processing') break;
-
-        const result = await this.performShare(job.link, cookie);
-        results.push(result);
-        
-        if (result.success) {
-          job.successfulShares++;
-          cookieManager.markCookieUsed(cookie.id);
-          if (!job.cookiesUsed.includes(cookie.id)) {
-            job.cookiesUsed.push(cookie.id);
-          }
-        } else {
-          job.failedShares++;
-          this.handleShareError(cookie, result.error);
+      const result = await this.performShare(job.link, cookie);
+      
+      if (result.success) {
+        job.successfulShares++;
+        cookieManager.markCookieUsed(cookie.id);
+        if (!job.cookiesUsed.includes(cookie.id)) {
+          job.cookiesUsed.push(cookie.id);
         }
-
-        sharesProcessed++;
-        job.progress = Math.round((sharesProcessed / job.totalShares) * 100);
-
-        this.addLog(jobId, {
-          id: uuidv4(),
-          timestamp: new Date(),
-          level: result.success ? 'info' : 'error',
-          message: result.success ? `Share successful: ${result.id}` : `Share failed: ${result.error}`,
-          cookieId: cookie.id,
-          shareId: jobId
-        });
-
-        // Random delay to avoid detection
-        await this.sleep(500 + Math.random() * 1000);
+      } else {
+        job.failedShares++;
+        if (result.error?.includes('token')) {
+          tokenService.invalidateToken(cookie.id);
+        }
       }
 
-      // Update job stats
+      sharesProcessed++;
+      job.progress = Math.round((sharesProcessed / job.totalShares) * 100);
+
+      this.addLog(jobId, {
+        id: uuidv4(),
+        timestamp: new Date(),
+        level: result.success ? 'info' : 'error',
+        message: result.success ? `✅ Share successful` : `❌ Share failed: ${result.error}`,
+        cookieId: cookie.id,
+        shareId: jobId
+      });
+
       this.activeJobs.set(jobId, job);
+      
+      await this.sleep(1000 + Math.random() * 2000);
     }
 
-    this.finalizeJob(jobId);
+    job.status = job.successfulShares > 0 ? 'completed' : 'failed';
+    job.endTime = new Date();
+    job.duration = (job.endTime.getTime() - job.startTime.getTime()) / 1000;
+    this.activeJobs.set(jobId, job);
+
+    logger.info(`Job completed: ${job.successfulShares} successful, ${job.failedShares} failed`);
   }
 
-  private async performShare(
-    link: string,
-    cookie: CookieAccount
-  ): Promise<ShareResult> {
+  private async performShare(link: string, cookie: CookieAccount): Promise<ShareResult> {
     try {
-      const token = await tokenService.getOrRefreshToken(cookie);
+      const token = await tokenService.extractToken(cookie);
       if (!token) {
         return { success: false, error: 'Failed to get access token', cookieId: cookie.id };
       }
 
       const userAgent = cookie.userAgent || USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-      const proxyConfig = cookie.proxy ? { proxy: { host: cookie.proxy } } : {};
 
-      const response = await axios.post(
-        'https://graph.facebook.com/v18.0/me/feed',
-        null,
-        {
-          params: {
-            link: link,
-            access_token: token,
-            published: 0
-          },
-          headers: {
-            'user-agent': userAgent,
-            'Cookie': cookie.cookie,
-            'accept': 'application/json, text/plain, */*',
-            'accept-language': 'en-US,en;q=0.9',
-            'origin': 'https://business.facebook.com',
-            'referer': 'https://business.facebook.com/'
-          },
-          timeout: 15000,
-          ...proxyConfig
-        }
-      );
+      const response = await axios.post('https://graph.facebook.com/v18.0/me/feed', null, {
+        params: {
+          link: link,
+          access_token: token,
+          published: 0
+        },
+        headers: {
+          'user-agent': userAgent,
+          'Cookie': cookie.cookie,
+          'accept': 'application/json, text/plain, */*'
+        },
+        timeout: 15000
+      });
 
       if (response.data && response.data.id) {
-        return {
-          success: true,
-          id: response.data.id,
-          cookieId: cookie.id
-        };
+        return { success: true, id: response.data.id, cookieId: cookie.id };
       }
 
       return { success: false, error: 'No ID in response', cookieId: cookie.id };
     } catch (error: any) {
       let errorMessage = error.message;
-      
-      if (error.response) {
-        if (error.response.status === 429) {
-          errorMessage = 'Rate limited by Facebook';
-          // Mark cookie for cooldown
-          cookieManager.updateCookie(cookie.id, { status: 'inactive' });
-          setTimeout(() => {
-            cookieManager.updateCookie(cookie.id, { status: 'active' });
-          }, 60000);
-        } else if (error.response.status === 400) {
-          errorMessage = 'Invalid request or token expired';
-          cookieManager.updateCookie(cookie.id, { status: 'banned' });
-        }
+      if (error.response?.status === 429) {
+        errorMessage = 'Rate limited';
+      } else if (error.response?.status === 400) {
+        errorMessage = 'Invalid token or request';
       }
-      
       return { success: false, error: errorMessage, cookieId: cookie.id };
-    }
-  }
-
-  private handleShareError(cookie: CookieAccount, error?: string): void {
-    if (error?.includes('rate limited')) {
-      cookieManager.updateCookie(cookie.id, { status: 'inactive' });
-      setTimeout(() => {
-        cookieManager.updateCookie(cookie.id, { status: 'active' });
-      }, 60000);
-    } else if (error?.includes('token expired') || error?.includes('Invalid request')) {
-      cookieManager.updateCookie(cookie.id, { status: 'banned' });
     }
   }
 
   private addLog(jobId: string, log: ShareLog): void {
     const logs = this.jobLogs.get(jobId) || [];
     logs.push(log);
-    this.jobLogs.set(jobId, logs);
-    
-    if (logs.length > 1000) {
-      this.jobLogs.set(jobId, logs.slice(-500));
-    }
-  }
-
-  private finalizeJob(jobId: string): void {
-    const job = this.activeJobs.get(jobId);
-    if (!job) return;
-
-    if (job.status === 'cancelled') {
-      job.status = 'cancelled';
-    } else {
-      job.status = job.successfulShares > 0 ? 'completed' : 'failed';
-    }
-    
-    job.endTime = new Date();
-    this.activeJobs.set(jobId, job);
-
-    const logger = new ShareLogger(jobId);
-    logger.info(`Job finalized: ${job.successfulShares} successful, ${job.failedShares} failed`);
+    this.jobLogs.set(jobId, logs.slice(-500));
   }
 
   getJob(jobId: string): ShareJob | undefined {
@@ -238,8 +211,6 @@ export class ShareService {
     if (job && (job.status === 'pending' || job.status === 'processing')) {
       job.status = 'cancelled';
       this.activeJobs.set(jobId, job);
-      const logger = new ShareLogger(jobId);
-      logger.info('Job cancelled by user');
       return true;
     }
     return false;
