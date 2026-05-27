@@ -4,29 +4,17 @@ let accessToken = null;
 let refreshToken = null;
 let refreshInterval = null;
 
-// API Base URL
 const API_URL = window.location.origin;
-
-// ==================== HELPER FUNCTIONS ====================
 
 function showToast(message, type = 'info') {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    const icons = {
-        success: 'fa-check-circle',
-        error: 'fa-exclamation-circle',
-        warning: 'fa-exclamation-triangle',
-        info: 'fa-info-circle'
-    };
-    toast.innerHTML = `
-        <i class="fas ${icons[type]}"></i>
-        <span>${escapeHtml(message)}</span>
-    `;
+    const icons = { success: 'fa-check-circle', error: 'fa-exclamation-circle', warning: 'fa-exclamation-triangle', info: 'fa-info-circle' };
+    toast.innerHTML = `<i class="fas ${icons[type]}"></i><span>${escapeHtml(message)}</span>`;
     container.appendChild(toast);
-    
     setTimeout(() => {
-        toast.style.animation = 'slideOutRight 0.3s ease';
+        toast.style.animation = 'slideOut 0.3s ease';
         setTimeout(() => toast.remove(), 300);
     }, 4000);
 }
@@ -41,20 +29,15 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// ==================== AUTHENTICATION FUNCTIONS ====================
-
+// Auth Functions
 function switchTab(tab) {
-    const tabs = document.querySelectorAll('.tab-btn');
-    const forms = document.querySelectorAll('.auth-form');
-    
-    tabs.forEach(t => t.classList.remove('active'));
-    forms.forEach(f => f.classList.remove('active'));
-    
+    document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
     if (tab === 'login') {
-        tabs[0].classList.add('active');
+        document.querySelector('.tab-btn:first-child').classList.add('active');
         document.getElementById('loginForm').classList.add('active');
     } else {
-        tabs[1].classList.add('active');
+        document.querySelector('.tab-btn:last-child').classList.add('active');
         document.getElementById('registerForm').classList.add('active');
     }
 }
@@ -64,7 +47,7 @@ async function login() {
     const password = document.getElementById('loginPassword').value;
     
     if (!username || !password) {
-        showToast('Please enter username/email and password', 'error');
+        showToast('Please enter username and password', 'error');
         return;
     }
     
@@ -84,18 +67,17 @@ async function login() {
             refreshToken = data.data.refreshToken;
             currentUser = data.data.user;
             
-            // Store tokens
             localStorage.setItem('accessToken', accessToken);
             localStorage.setItem('refreshToken', refreshToken);
             localStorage.setItem('user', JSON.stringify(currentUser));
             
-            showToast('Login successful! Welcome back!', 'success');
+            showToast('Login successful!', 'success');
             loadApp();
         } else {
             showToast(data.message || 'Login failed', 'error');
         }
     } catch (error) {
-        showToast('Network error. Please try again.', 'error');
+        showToast('Network error', 'error');
     } finally {
         showLoading(false);
     }
@@ -107,7 +89,6 @@ async function register() {
     const password = document.getElementById('registerPassword').value;
     const confirmPassword = document.getElementById('registerConfirmPassword').value;
     
-    // Validation
     if (!username || !email || !password) {
         showToast('Please fill all fields', 'error');
         return;
@@ -119,7 +100,7 @@ async function register() {
     }
     
     if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-        showToast('Please enter a valid email address', 'error');
+        showToast('Invalid email format', 'error');
         return;
     }
     
@@ -153,13 +134,13 @@ async function register() {
             localStorage.setItem('refreshToken', refreshToken);
             localStorage.setItem('user', JSON.stringify(currentUser));
             
-            showToast('Registration successful! Welcome!', 'success');
+            showToast('Registration successful!', 'success');
             loadApp();
         } else {
             showToast(data.message || 'Registration failed', 'error');
         }
     } catch (error) {
-        showToast('Network error. Please try again.', 'error');
+        showToast('Network error', 'error');
     } finally {
         showLoading(false);
     }
@@ -179,27 +160,18 @@ async function logout() {
                 body: JSON.stringify({ refreshToken })
             });
         }
-    } catch (error) {
-        console.error('Logout error:', error);
-    }
+    } catch (error) {}
     
-    // Clear local storage
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    localStorage.removeItem('user');
-    
+    localStorage.clear();
     accessToken = null;
     refreshToken = null;
     currentUser = null;
     
-    if (refreshInterval) {
-        clearInterval(refreshInterval);
-    }
+    if (refreshInterval) clearInterval(refreshInterval);
     
     document.getElementById('appContainer').style.display = 'none';
     document.getElementById('authContainer').style.display = 'flex';
-    showToast('Logged out successfully', 'info');
-    
+    showToast('Logged out', 'info');
     showLoading(false);
 }
 
@@ -220,39 +192,31 @@ async function refreshAccessToken() {
             localStorage.setItem('accessToken', accessToken);
             return true;
         }
-    } catch (error) {
-        console.error('Token refresh failed:', error);
-    }
+    } catch (error) {}
     
     return false;
 }
 
-// ==================== MAIN APP LOADING ====================
-
+// Main App
 async function loadApp() {
     document.getElementById('authContainer').style.display = 'none';
     document.getElementById('appContainer').style.display = 'flex';
     
-    // Update user info in sidebar
     document.getElementById('usernameDisplay').textContent = currentUser.username;
     document.getElementById('dashboardUsername').textContent = currentUser.username;
     
-    // Setup navigation
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
-            const page = item.dataset.page;
-            switchPage(page);
+            switchPage(item.dataset.page);
         });
     });
     
-    // Load initial data
     await loadDashboard();
     await loadCookies();
     await loadHistory();
     await loadActiveShares();
     
-    // Start auto-refresh for dashboard and active shares
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(() => {
         if (document.getElementById('dashboardPage').classList.contains('active')) {
@@ -261,12 +225,9 @@ async function loadApp() {
         loadActiveShares();
     }, 5000);
     
-    // Set up token refresh every 23 hours
     setInterval(async () => {
         const success = await refreshAccessToken();
-        if (!success) {
-            logout();
-        }
+        if (!success) logout();
     }, 23 * 60 * 60 * 1000);
 }
 
@@ -276,20 +237,16 @@ function switchPage(page) {
     
     document.querySelectorAll('.nav-item').forEach(item => {
         item.classList.remove('active');
-        if (item.dataset.page === page) {
-            item.classList.add('active');
-        }
+        if (item.dataset.page === page) item.classList.add('active');
     });
     
-    // Refresh data when switching pages
     if (page === 'dashboard') loadDashboard();
     else if (page === 'cookies') loadCookies();
     else if (page === 'history') loadHistory();
     else if (page === 'logs') loadLogs();
 }
 
-// ==================== DASHBOARD ====================
-
+// Dashboard
 async function loadDashboard() {
     try {
         const response = await fetch(`${API_URL}/api/stats`, {
@@ -311,8 +268,7 @@ async function loadDashboard() {
     }
 }
 
-// ==================== COOKIE MANAGEMENT ====================
-
+// Cookies
 async function loadCookies() {
     try {
         const response = await fetch(`${API_URL}/api/cookies/list`, {
@@ -340,14 +296,11 @@ async function loadCookies() {
                 </div>
             `).join('');
             
-            // Update cookie select for share form
             const select = document.getElementById('cookieSelect');
             const activeCookies = data.data.cookies.filter(c => c.status === 'active');
             if (activeCookies.length > 0) {
                 select.innerHTML = '<option value="">Select a cookie</option>' + 
-                    activeCookies.map(cookie => 
-                        `<option value="${cookie.id}">${escapeHtml(cookie.name)}</option>`
-                    ).join('');
+                    activeCookies.map(cookie => `<option value="${cookie.id}">${escapeHtml(cookie.name)}</option>`).join('');
             } else {
                 select.innerHTML = '<option value="">No active cookies available</option>';
             }
@@ -384,7 +337,7 @@ async function addCookie() {
         const data = await response.json();
         
         if (data.status) {
-            showToast('Cookie added successfully!', 'success');
+            showToast(data.message, data.data.cookie.status === 'active' ? 'success' : 'warning');
             closeCookieModal();
             loadCookies();
             loadDashboard();
@@ -410,11 +363,11 @@ async function deleteCookie(cookieId) {
         const data = await response.json();
         
         if (data.status) {
-            showToast('Cookie deleted successfully', 'success');
+            showToast('Cookie deleted', 'success');
             loadCookies();
             loadDashboard();
         } else {
-            showToast(data.message || 'Failed to delete cookie', 'error');
+            showToast(data.message || 'Failed to delete', 'error');
         }
     } catch (error) {
         showToast('Network error', 'error');
@@ -436,16 +389,13 @@ async function clearAllCookies() {
             showToast('All cookies cleared', 'success');
             loadCookies();
             loadDashboard();
-        } else {
-            showToast(data.message || 'Failed to clear cookies', 'error');
         }
     } catch (error) {
         showToast('Network error', 'error');
     }
 }
 
-// ==================== SHARE FUNCTIONS ====================
-
+// Share Functions
 async function startShare() {
     const cookieId = document.getElementById('cookieSelect').value;
     const link = document.getElementById('postLink').value.trim();
@@ -497,7 +447,7 @@ async function startShare() {
 }
 
 async function cancelShare(shareId) {
-    if (!confirm('Are you sure you want to cancel this share?')) return;
+    if (!confirm('Cancel this share?')) return;
     
     try {
         const response = await fetch(`${API_URL}/api/share/${shareId}/cancel`, {
@@ -511,16 +461,13 @@ async function cancelShare(shareId) {
             showToast('Share cancelled', 'success');
             loadActiveShares();
             loadHistory();
-        } else {
-            showToast(data.message || 'Failed to cancel share', 'error');
         }
     } catch (error) {
         showToast('Network error', 'error');
     }
 }
 
-// ==================== HISTORY & LOGS ====================
-
+// History
 async function loadHistory() {
     try {
         const response = await fetch(`${API_URL}/api/history?limit=50`, {
@@ -533,16 +480,17 @@ async function loadHistory() {
             container.innerHTML = data.data.history.map(share => `
                 <div class="history-item">
                     <div class="history-header">
-                        <strong>${escapeHtml(share.link.substring(0, 70))}...</strong>
+                        <strong>${escapeHtml(share.link.substring(0, 60))}...</strong>
                         <span class="history-status ${share.status}">${share.status}</span>
                     </div>
-                    <div>Requested: ${share.limit} shares | Success: ${share.success} | Failed: ${share.failed}</div>
+                    <div>Cookie: ${escapeHtml(share.cookieName)} | Requested: ${share.limit} shares</div>
+                    <div>Success: ${share.success} | Failed: ${share.failed}</div>
                     ${share.progress > 0 && share.status === 'processing' ? `
                         <div class="progress-bar">
                             <div class="progress-fill" style="width: ${share.progress}%"></div>
                         </div>
                     ` : ''}
-                    <div style="font-size: 12px; color: var(--text-gray); margin-top: 12px;">
+                    <div style="font-size: 12px; color: #9ca3af; margin-top: 12px;">
                         Started: ${new Date(share.startTime).toLocaleString()}
                         ${share.endTime ? ` | Ended: ${new Date(share.endTime).toLocaleString()}` : ''}
                     </div>
@@ -554,7 +502,7 @@ async function loadHistory() {
                 </div>
             `).join('');
         } else {
-            container.innerHTML = '<p class="no-data">No share history yet. Start your first share!</p>';
+            container.innerHTML = '<p class="no-data">No share history yet</p>';
         }
     } catch (error) {
         console.error('Error loading history:', error);
@@ -573,7 +521,7 @@ async function loadActiveShares() {
             container.innerHTML = data.data.active_shares.map(share => `
                 <div class="share-item">
                     <div class="history-header">
-                        <strong>${escapeHtml(share.link.substring(0, 60))}...</strong>
+                        <strong>${escapeHtml(share.link.substring(0, 50))}...</strong>
                         <span class="history-status processing">${share.status}</span>
                     </div>
                     <div>Progress: ${share.completed}/${share.limit} shares</div>
@@ -581,7 +529,7 @@ async function loadActiveShares() {
                         <div class="progress-fill" style="width: ${share.progress}%"></div>
                     </div>
                     <button onclick="cancelShare('${share.id}')" class="btn-danger" style="margin-top: 12px;">
-                        <i class="fas fa-times"></i> Cancel Share
+                        <i class="fas fa-times"></i> Cancel
                     </button>
                 </div>
             `).join('');
@@ -605,10 +553,8 @@ async function loadLogs() {
             const logs = [];
             data.data.history.forEach(share => {
                 logs.push({
-                    type: share.status === 'completed' ? 'success' : 
-                          share.status === 'failed' ? 'error' : 
-                          share.status === 'processing' ? 'info' : 'warning',
-                    message: `Share session - ${share.success} successful, ${share.failed} failed`,
+                    type: share.status === 'completed' ? 'success' : share.status === 'failed' ? 'error' : 'info',
+                    message: `${share.success} successful, ${share.failed} failed using cookie "${share.cookieName}"`,
                     time: share.startTime
                 });
             });
@@ -630,8 +576,7 @@ async function loadLogs() {
     }
 }
 
-// ==================== MODAL FUNCTIONS ====================
-
+// Modal Functions
 function showAddCookieModal() {
     document.getElementById('cookieModal').style.display = 'flex';
 }
@@ -643,50 +588,17 @@ function closeCookieModal() {
 }
 
 function showCookieGuide() {
-    const guideHtml = `
-        <div class="modal" id="guideModal" style="display: flex;">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h3>How to Get Your Facebook Cookie</h3>
-                    <button class="close-btn" onclick="closeGuideModal()">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <ol style="margin-left: 20px; line-height: 1.8;">
-                        <li>Log into Facebook on Chrome/Firefox</li>
-                        <li>Press F12 to open Developer Tools</li>
-                        <li>Go to Application/Storage tab</li>
-                        <li>Find Cookies section and select facebook.com</li>
-                        <li>Copy the entire cookie string (all name=value pairs separated by semicolons)</li>
-                        <li>Paste it into the cookie field above</li>
-                    </ol>
-                    <p style="margin-top: 15px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px;">
-                        <strong>💡 Tip:</strong> Cookies expire after some time. You may need to refresh them periodically.
-                    </p>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn-primary" onclick="closeGuideModal()">Got it</button>
-                </div>
-            </div>
-        </div>
-    `;
-    document.body.insertAdjacentHTML('beforeend', guideHtml);
+    alert("How to get your Facebook cookie:\n\n1. Log into Facebook\n2. Press F12 for Developer Tools\n3. Go to Application/Storage tab\n4. Find Cookies > facebook.com\n5. Copy the entire cookie string\n\nFormat: name1=value1; name2=value2; ...");
 }
 
-function closeGuideModal() {
-    const modal = document.getElementById('guideModal');
-    if (modal) modal.remove();
-}
-
-// ==================== INITIALIZATION ====================
-
-// Check for existing session on page load
+// Initialize
 document.addEventListener('DOMContentLoaded', () => {
-    const savedAccessToken = localStorage.getItem('accessToken');
+    const savedToken = localStorage.getItem('accessToken');
     const savedRefreshToken = localStorage.getItem('refreshToken');
     const savedUser = localStorage.getItem('user');
     
-    if (savedAccessToken && savedRefreshToken && savedUser) {
-        accessToken = savedAccessToken;
+    if (savedToken && savedRefreshToken && savedUser) {
+        accessToken = savedToken;
         refreshToken = savedRefreshToken;
         currentUser = JSON.parse(savedUser);
         loadApp();
@@ -695,30 +607,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Close modal when clicking outside
 window.onclick = function(event) {
-    const cookieModal = document.getElementById('cookieModal');
-    if (event.target === cookieModal) {
-        closeCookieModal();
-    }
-    const guideModal = document.getElementById('guideModal');
-    if (event.target === guideModal) {
-        closeGuideModal();
-    }
+    const modal = document.getElementById('cookieModal');
+    if (event.target === modal) closeCookieModal();
 };
-
-// Add CSS animation for toast
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideOutRight {
-        from {
-            transform: translateX(0);
-            opacity: 1;
-        }
-        to {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-    }
-`;
-document.head.appendChild(style);
